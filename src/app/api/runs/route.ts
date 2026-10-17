@@ -87,27 +87,47 @@ export async function POST(req: Request) {
     }
   }
 
-  const span = await prisma.span.create({
-    data: {
-      runId,
-      parentId: null, // Stage 0 恒为 null，Stage 1 才写值
-      type: 'llm_call',
-      name: params.model,
-      input: JSON.stringify(inputPayload),
-      output: JSON.stringify(outputPayload),
-      model: params.model,
-      inputTokens: usage.inputTokens,
-      outputTokens: usage.outputTokens,
-      latencyMs,
-    },
-  })
+  // 写库单独包一层错误处理。
+  // 原来这里是裸的 —— 数据库一出问题就抛出去，Next 回一个**空响应体的 500**，
+  // 前端只看到 "Unexpected end of JSON input"，完全查不出原因。
+  try {
+    const span = await prisma.span.create({
+      data: {
+        runId,
+        parentId: null, // Stage 0 恒为 null，Stage 1 才写值
+        type: 'llm_call',
+        name: params.model,
+        input: JSON.stringify(inputPayload),
+        output: JSON.stringify(outputPayload),
+        model: params.model,
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        latencyMs,
+      },
+    })
 
-  return NextResponse.json({
-    ok,
-    span: serializeSpan(span),
-    // 思维链正文单独返回，方便前端立即展示（也已经在 output 里存了一份）
-    reasoningText,
-  })
+    return NextResponse.json({
+      ok,
+      span: serializeSpan(span),
+      // 思维链正文单独返回，方便前端立即展示（也已经在 output 里存了一份）
+      reasoningText,
+    })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+
+    // 服务端日志留全量错误，前端只看到一句话
+    console.error('[POST /api/runs] 写入 span 失败：', err)
+
+    // 关键：模型调用可能已经成功了，但记录没落库。
+    // 这时候绝不能返回 ok: true —— 前端会以为记录存下来了，实际丢了一次调用数据。
+    return NextResponse.json(
+      {
+        error: `调用${ok ? '成功' : '失败'}，但记录写入数据库失败：${message}`,
+        persisted: false,
+      },
+      { status: 500 },
+    )
+  }
 }
 
 /** 列出最近的调用记录 */

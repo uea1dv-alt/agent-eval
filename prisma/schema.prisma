@@ -11,9 +11,16 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
-  // 从环境变量读，不硬编码。以后切 Postgres 只需改 provider 这一行 + 换连接串。
-  url      = env("DATABASE_URL")
+  provider = "postgresql"
+
+  // 应用连库走**连接池**。Vercel 是 serverless，每个请求可能落在新进程里，
+  // 直连会把 Neon 的连接数用光。POSTGRES_PRISMA_URL 由 Vercel 的 Neon 集成
+  // 注入，主机名里带 -pooler。
+  url = env("POSTGRES_PRISMA_URL")
+
+  // 跑迁移走**直连**（主机名不带 -pooler）。连接池（pgbouncer）不支持迁移
+  // 要用的部分 SQL 语句，所以 prisma migrate 必须绕开它。
+  directUrl = env("POSTGRES_URL_NON_POOLING")
 }
 
 /// 一次调用（LLM 调用或工具调用）的记录。
@@ -26,15 +33,16 @@ model Span {
   parentId String?
 
   /// "llm_call" | "tool_call"
-  /// 用 String 而非 enum —— SQLite 不支持 Prisma enum。
-  /// TS 侧用 SpanType 联合类型兜住类型安全。
+  /// 用 String 而非 enum：TS 侧已有 SpanType 联合类型兜住类型安全，
+  /// 再加一层 DB enum 只会让每次增删类型都多一道迁移。
   type String
 
   /// span 名称，便于在树上辨认，例如 "deepseek-flash" 或工具名
   name String
 
   /// 入参的 JSON 字符串（prompt、模型、参数等）
-  /// 用 String 存 JSON 而非 Json 类型 —— 保证 SQLite/Postgres 都能跑，不用改列类型
+  /// 用 String 存 JSON 而非 Json 类型：读时手动 parse（已封装在 lib/spans.ts），
+  /// 换来的是换库或换 ORM 时不用动列类型。
   input  String
   /// 出参的 JSON 字符串（模型返回的文本、finishReason 等）
   output String?

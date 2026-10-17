@@ -1,6 +1,6 @@
 -- CreateTable
 CREATE TABLE "Span" (
-    "id" TEXT NOT NULL PRIMARY KEY,
+    "id" TEXT NOT NULL,
     "runId" TEXT NOT NULL,
     "parentId" TEXT,
     "type" TEXT NOT NULL,
@@ -11,8 +11,9 @@ CREATE TABLE "Span" (
     "inputTokens" INTEGER,
     "outputTokens" INTEGER,
     "latencyMs" INTEGER,
-    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT "Span_parentId_fkey" FOREIGN KEY ("parentId") REFERENCES "Span" ("id") ON DELETE SET NULL ON UPDATE CASCADE
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "Span_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateIndex
@@ -20,3 +21,6 @@ CREATE INDEX "Span_runId_idx" ON "Span"("runId");
 
 -- CreateIndex
 CREATE INDEX "Span_createdAt_idx" ON "Span"("createdAt");
+
+-- AddForeignKey
+ALTER TABLE "Span" ADD CONSTRAINT "Span_parentId_fkey" FOREIGN KEY ("parentId") REFERENCES "Span"("id") ON DELETE SET NULL ON UPDATE CASCADE;
