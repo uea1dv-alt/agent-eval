@@ -43,3 +43,10 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# 下面两行是 vercel CLI 自动加的。.vercel 上面第 41 行已有，重复无害，先不动。
+# 要处理的是 .env*：它会把 .env.example 也忽略掉，
+# 而 gitignore 的规则是「后面的覆盖前面的」——第 3 行的 !.env.example 被它盖住了。
+# 所以必须在它之后再放行一次，否则 .env.example 的保护形同虚设。
+.env*
+!.env.example
