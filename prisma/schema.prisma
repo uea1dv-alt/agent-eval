@@ -1,0 +1,55 @@
+// agent-eval 数据模型
+//
+// 只有一张表：Span。一次 Agent 运行（run）会产生多个 span，
+// 每个 span 是一次 LLM 调用或一次工具调用。
+//
+// Stage 0 只写 llm_call，且每个 run 只有一个 span、parentId 恒为 null。
+// Stage 1 加多步 Agent 后，parentId 才会真正串成树。
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  // 从环境变量读，不硬编码。以后切 Postgres 只需改 provider 这一行 + 换连接串。
+  url      = env("DATABASE_URL")
+}
+
+/// 一次调用（LLM 调用或工具调用）的记录。
+/// 字段命名参考 OpenTelemetry 的 LLM span 语义约定。
+model Span {
+  id       String  @id @default(cuid())
+  /// 同一次运行的所有 span 共享这个 id。Stage 0 每次运行只产生一个 span。
+  runId    String
+  /// 自关联成 trace 树。Stage 0 恒为 null，Stage 1 才写值。
+  parentId String?
+
+  /// "llm_call" | "tool_call"
+  /// 用 String 而非 enum —— SQLite 不支持 Prisma enum。
+  /// TS 侧用 SpanType 联合类型兜住类型安全。
+  type String
+
+  /// span 名称，便于在树上辨认，例如 "deepseek-flash" 或工具名
+  name String
+
+  /// 入参的 JSON 字符串（prompt、模型、参数等）
+  /// 用 String 存 JSON 而非 Json 类型 —— 保证 SQLite/Postgres 都能跑，不用改列类型
+  input  String
+  /// 出参的 JSON 字符串（模型返回的文本、finishReason 等）
+  output String?
+
+  model        String?
+  inputTokens  Int?
+  outputTokens Int?
+  latencyMs    Int?
+
+  createdAt DateTime @default(now())
+
+  // 自关联：一个 span 有一个父 span，可以有多个子 span
+  parent   Span?  @relation("SpanTree", fields: [parentId], references: [id])
+  children Span[] @relation("SpanTree")
+
+  @@index([runId])
+  @@index([createdAt])
+}

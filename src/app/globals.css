@@ -1,0 +1,86 @@
+@import "tailwindcss";
+
+/*
+ * 设计令牌
+ *
+ * 定位：仪表盘，不是营销页。所以是「密度 + 克制」，不是「留白 + 大标题」。
+ *
+ * 配色思路：底色用偏蓝的石墨而不是纯黑 —— 纯黑 + 荧光色是最容易撞的默认方案。
+ * 强调色只有一个（黄铜），并且只用在「实时测量」相关的地方：耗时条、主按钮。
+ * 其余全靠石墨灰阶 + 细线分隔。
+ */
+@theme {
+  --color-base: #101419;
+  --color-panel: #171d24;
+  --color-panel-2: #1d242c;
+  --color-line: #262e38;
+  --color-line-soft: #1e252d;
+
+  --color-ink: #e6eaf0;
+  --color-muted: #7d8b9e;
+  --color-faint: #55606f;
+
+  /* 唯一的强调色：黄铜。用于耗时条和主操作。 */
+  --color-brass: #e8a33d;
+  /* 输入 token 用冷色，和输出区分开，但都不抢黄铜的戏 */
+  --color-steel: #5e8ca8;
+  --color-danger: #d96a5b;
+
+  --radius-xs: 2px;
+}
+
+@theme inline {
+  --font-sans: var(--font-plex-sans);
+  --font-mono: var(--font-plex-mono);
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background-color: var(--color-base);
+  color: var(--color-ink);
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/*
+ * 数字一律用 mono 并开启等宽数字（tabular-nums）。
+ * 这不是「mono 显得技术感」的装饰 —— 是让不同行的 token 数能上下对齐，
+ * 扫一眼就能比大小。比例字体做不到这一点。
+ */
+.num {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/* 键盘可达性 —— 深色底上默认 outline 几乎看不见 */
+:focus-visible {
+  outline: 2px solid var(--color-brass);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* 表单控件统一底色，避免浏览器默认样式在深色底下发白 */
+input,
+select,
+textarea,
+button {
+  font: inherit;
+  color: inherit;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--color-brass) 35%, transparent);
+}
