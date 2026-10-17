@@ -2,7 +2,9 @@
 
 Agent 运行追踪与评测平台 —— 给 LLM Agent 做 trace + eval 的基础设施。
 
-## 当前进度：Stage 0 ✅
+## 当前进度：Stage 0 ✅ 已上线
+
+**https://agent-eval-six.vercel.app**
 
 单次 LLM 调用的记录本。发一个 prompt，把这次调用的 **token 数 / 耗时 / 输入输出 / 成本** 落库，并在页面上看到历史记录。
 
@@ -14,7 +16,8 @@ npm install
 
 # 2. 配环境变量（.env 是 gitignore 的，不会提交）
 cp .env.example .env
-# 然后编辑 .env，填入 DEEPSEEK_API_KEY
+# 然后编辑 .env，填入 DEEPSEEK_API_KEY 和两个 Neon 连接串
+# （两个连接串为什么是两个，见 .env.example 里的注释）
 
 # 3. 建数据库表
 npm run db:migrate
@@ -79,16 +82,19 @@ id | runId | parentId | type | name | input | output
 
 | 阶段 | 交付物 | 状态 |
 |---|---|---|
-| **Stage 0** | 单次 LLM 调用的记录本 | ✅ 功能完成（部署待做） |
+| **Stage 0** | 单次 LLM 调用的记录本 | ✅ 已上线 |
 | **Stage 1** | 多步 Agent + trace 树 | ⬜ |
 | **Stage 2** | 评测与对比（数据集 + LLM-as-judge + prompt 版本对比） | ⬜ |
 
 ## 技术栈
 
-Next.js 16 (App Router) · React 19 · TypeScript · Prisma 6 + SQLite · Vercel AI SDK 7 + `@ai-sdk/deepseek`
+Next.js 16 (App Router) · React 19 · TypeScript · Prisma 6 + Postgres (Neon) · Vercel AI SDK 7 + `@ai-sdk/deepseek`
 
 ## 已知事项
 
-- **部署未做**。Vercel 是 Serverless，本地 SQLite 文件在线上存不住。schema 已做成可移植（无 SQLite 独有类型），切 Postgres 只需改 provider 一行 + 换连接串。
+- **数据库是 Neon Postgres**（US East / `iad1`，跟 Vercel 函数同区）。连接串由 Vercel 的 Neon 集成自动注入。
+  两个连接串用途不同：应用侧走 `POSTGRES_PRISMA_URL`（**连接池**），迁移走 `POSTGRES_URL_NON_POOLING`（**直连**）。
+  原因是 Vercel 是 serverless —— 每个请求可能落在新进程里，直连会把连接数用光；而连接池（pgbouncer）不支持迁移要用的部分 SQL 语句。
+  本地开发也连同一个库（没有本地 Postgres），所以「本地好的线上坏」这类问题不会出现。
 - **成本为上限估算**：按高峰价、输入未命中缓存计算，实际账单通常更低。
 - 踩坑记录见 `notes/`。
