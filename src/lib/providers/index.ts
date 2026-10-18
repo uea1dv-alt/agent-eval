@@ -33,4 +33,15 @@ export function listProviderMeta() {
   }))
 }
 
-export type { LLMProvider, LLMCallParams, LLMCallResult, ModelInfo, TokenUsage, ReasoningEffort, SpanType } from './types'
+export type {
+  LLMProvider,
+  LLMCallParams,
+  LLMCallResult,
+  ModelInfo,
+  TokenUsage,
+  ReasoningEffort,
+  SpanType,
+  AgentTool,
+  AgentParams,
+  AgentEvent,
+} from './types'

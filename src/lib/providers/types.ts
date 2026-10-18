@@ -6,8 +6,15 @@
  * 只需要新写一个实现文件，别处一行不用改。
  */
 
-/** span 类型。DB 里是 String（SQLite 不支持 enum），类型安全靠这个联合类型兜住。 */
-export type SpanType = 'llm_call' | 'tool_call'
+import type { ZodType } from 'zod'
+
+/**
+ * span 类型。DB 里存的是 String，类型安全靠这个联合类型兜住。
+ *
+ * 为什么不在 DB 里用 enum：加一个类型就得跑一次迁移。Stage 1 加 `agent_run`
+ * 时只改了这一行 —— 这就是当初选 String 的回报。
+ */
+export type SpanType = 'llm_call' | 'tool_call' | 'agent_run'
 
 /** 思考强度。DeepSeek V4 支持 low / high / max。 */
 export type ReasoningEffort = 'low' | 'high' | 'max'
@@ -63,6 +70,75 @@ export interface LLMCallResult {
   latencyMs: number
 }
 
+/**
+ * 一个可供模型调用的工具。
+ *
+ * 为什么 `execute` 的入参是 `unknown` 而不是从 schema 推断：
+ * provider 层要能装下任意工具，写成泛型会让注册表变成一堆类型体操。
+ * 参数校验交给 zod（schema 就在旁边），执行时再断言。
+ */
+export interface AgentTool {
+  name: string
+  description: string
+  /** 入参的 zod schema —— 模型据此生成调用参数，SDK 据此校验 */
+  inputSchema: ZodType
+  /** 实际执行。返回值会被 JSON 序列化后交给模型 */
+  execute: (input: unknown) => Promise<unknown>
+}
+
+/** 一次 agent 运行的入参 */
+export interface AgentParams {
+  model: string
+  prompt: string
+  system?: string
+  /** 最多跑几步。防止模型在工具之间来回打转把额度烧光 */
+  maxSteps: number
+  temperature?: number
+  maxOutputTokens?: number
+  thinking?: boolean
+  reasoningEffort?: ReasoningEffort
+}
+
+/**
+ * agent 运行过程中往外抛的事件。
+ *
+ * provider 负责把各家 SDK 的流翻译成这个形状，**SDK 的类型不外泄** ——
+ * 这正是 adapter 层的意义：换个厂商，上层一行不用改。
+ *
+ * 注意：这里**不含数据库操作**。provider 只负责「跑模型、调工具、报事件」，
+ * 落库是 API 路由的事。
+ */
+export type AgentEvent =
+  | { type: 'step_start'; step: number }
+  | { type: 'text_delta'; text: string }
+  | { type: 'reasoning_delta'; text: string }
+  /**
+   * `toolCallId` 是 SDK 给的配对号。
+   * 为什么必须有它：模型**可以在一轮里同时调多个工具**，那样会有多个 tool_call
+   * 和多个 tool_result 交错到达。只靠工具名或到达顺序配对，遇到同名工具就会串。
+   */
+  | { type: 'tool_call'; toolCallId: string; toolName: string; input: unknown }
+  /** 工具执行完（或失败）。失败时 error 有值、output 为 null —— 失败也要被记录 */
+  | {
+      type: 'tool_result'
+      toolCallId: string
+      toolName: string
+      output: unknown
+      latencyMs: number
+      error?: string
+    }
+  | {
+      type: 'step_end'
+      step: number
+      text: string
+      reasoningText?: string
+      finishReason: string
+      usage: TokenUsage
+      latencyMs: number
+    }
+  | { type: 'done'; text: string; usage: TokenUsage; stepCount: number }
+  | { type: 'error'; message: string }
+
 /** 所有 provider 实现都必须满足的接口 */
 export interface LLMProvider {
   /** 唯一标识，例如 'deepseek' */
@@ -71,5 +147,11 @@ export interface LLMProvider {
   label: string
   /** 该 provider 下可用的模型及各自能力 */
   models: ModelInfo[]
+  /** 单次调用。Stage 0 的路径，保留 */
   chat(params: LLMCallParams): Promise<LLMCallResult>
+  /**
+   * 多步 agent：跑模型 → 需要就调工具 → 把结果喂回去 → 再跑，直到模型给出最终答案。
+   * 返回异步可迭代对象，事件边产生边抛。
+   */
+  runAgent(params: AgentParams, tools: AgentTool[]): AsyncIterable<AgentEvent>
 }
