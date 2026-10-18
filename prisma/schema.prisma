@@ -1,10 +1,11 @@
 // agent-eval 数据模型
 //
 // 只有一张表：Span。一次 Agent 运行（run）会产生多个 span，
-// 每个 span 是一次 LLM 调用或一次工具调用。
+// 每个 span 是这次运行本身、一次 LLM 调用、或一次工具调用。
 //
-// Stage 0 只写 llm_call，且每个 run 只有一个 span、parentId 恒为 null。
-// Stage 1 加多步 Agent 后，parentId 才会真正串成树。
+// Stage 0：每个 run 只有一个 span（llm_call），parentId 恒为 null。
+// Stage 1：一次运行产生多个 span，parentId 串成 trace 树，多了一个 agent_run 根节点。
+//          表结构一行没改 —— 只往 type 列加了个新值，这正是当初选 String 而非 enum 的回报。
 
 generator client {
   provider = "prisma-client-js"
@@ -27,12 +28,12 @@ datasource db {
 /// 字段命名参考 OpenTelemetry 的 LLM span 语义约定。
 model Span {
   id       String  @id @default(cuid())
-  /// 同一次运行的所有 span 共享这个 id。Stage 0 每次运行只产生一个 span。
+  /// 同一次运行的所有 span 共享这个 id。一次运行至少有根节点那一个 span。
   runId    String
-  /// 自关联成 trace 树。Stage 0 恒为 null，Stage 1 才写值。
+  /// 自关联成 trace 树。null 表示这次运行的根节点（agent_run）。
   parentId String?
 
-  /// "llm_call" | "tool_call"
+  /// "agent_run" | "llm_call" | "tool_call"
   /// 用 String 而非 enum：TS 侧已有 SpanType 联合类型兜住类型安全，
   /// 再加一层 DB enum 只会让每次增删类型都多一道迁移。
   type String

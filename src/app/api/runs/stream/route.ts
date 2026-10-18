@@ -1,3 +1,4 @@
+import type { Span } from '@prisma/client'
 import { NextResponse } from 'next/server'
 import { z } from 'zod'
 import type { StreamEvent } from '@/lib/agent/events'
@@ -101,6 +102,29 @@ export async function POST(req: Request) {
         }
       }
 
+      // ---- 写库和读流解耦 ----
+      //
+      // 原来是在 `for await` 里直接 `await` 写库。那样写库期间不读流，
+      // span 一多就会拖慢 agent —— 而且它把「等写库」的时间算进了
+      // 下一条流事件被观察到的时刻里（工具耗时被污染，见 deepseek.ts 里的说明）。
+      //
+      // 现在读流的循环只管把写任务排进队列，立刻回去读下一个事件。
+      //
+      // 为什么是**串行**队列、不是并发：写之间是有先后依赖的 ——
+      // 先 INSERT 一个空壳 llm_call，后面才 UPDATE 它补正文和 token。
+      // 并发写会乱序，UPDATE 可能跑在 INSERT 前面。
+      //
+      // 队列不会涨很大：一个事件最多排一次写，而事件之间隔着模型的网络往返。
+      let writeChain: Promise<void> = Promise.resolve()
+
+      /** 排一次写库。写完之后把最新的 span 推给前端 —— 树就是这么边跑边长的 */
+      const enqueueWrite = (label: string, action: () => Promise<Span>) => {
+        writeChain = writeChain.then(async () => {
+          const row = await persist(label, action)
+          if (row) send({ type: 'span', span: serializeSpan(row) })
+        })
+      }
+
       const startedAt = performance.now()
       const rootId = crypto.randomUUID()
 
@@ -175,7 +199,7 @@ export async function POST(req: Request) {
               currentCallId = id
               stepCount = event.step
 
-              const row = await persist('写入 llm_call', () =>
+              enqueueWrite('写入 llm_call', () =>
                 prisma.span.create({
                   data: {
                     id,
@@ -195,7 +219,6 @@ export async function POST(req: Request) {
                   },
                 }),
               )
-              if (row) send({ type: 'span', span: serializeSpan(row) })
               break
             }
 
@@ -205,19 +228,23 @@ export async function POST(req: Request) {
               const id = crypto.randomUUID()
               toolSpanIds.set(event.toolCallId, id)
 
-              const row = await persist('写入 tool_call', () =>
+              // 父节点必须**在这里**就定下来。闭包是稍后才执行的，
+              // 那时候 currentCallId 可能已经推进到下一步了 ——
+              // 那样工具就会被挂到错误的那次调用下面（而且不报错）。
+              const parentId = currentCallId ?? rootId
+
+              enqueueWrite('写入 tool_call', () =>
                 prisma.span.create({
                   data: {
                     id,
                     runId,
-                    parentId: currentCallId ?? rootId,
+                    parentId,
                     type: 'tool_call',
                     name: event.toolName,
                     input: JSON.stringify({ toolName: event.toolName, args: event.input }),
                   },
                 }),
               )
-              if (row) send({ type: 'span', span: serializeSpan(row) })
               break
             }
 
@@ -226,7 +253,7 @@ export async function POST(req: Request) {
               const id = toolSpanIds.get(event.toolCallId)
               if (!id) break
 
-              const row = await persist('更新 tool_call', () =>
+              enqueueWrite('更新 tool_call', () =>
                 prisma.span.update({
                   where: { id },
                   data: {
@@ -237,7 +264,6 @@ export async function POST(req: Request) {
                   },
                 }),
               )
-              if (row) send({ type: 'span', span: serializeSpan(row) })
               break
             }
 
@@ -247,7 +273,7 @@ export async function POST(req: Request) {
               const callId = currentCallId
               if (!callId) break
 
-              const row = await persist('更新 llm_call', () =>
+              enqueueWrite('更新 llm_call', () =>
                 prisma.span.update({
                   where: { id: callId },
                   data: {
@@ -262,7 +288,6 @@ export async function POST(req: Request) {
                   },
                 }),
               )
-              if (row) send({ type: 'span', span: serializeSpan(row) })
               break
             }
 
@@ -286,6 +311,11 @@ export async function POST(req: Request) {
       }
 
       const latencyMs = Math.round(performance.now() - startedAt)
+
+      // 收尾前先把队列排空。这一步是必须的：
+      // 队列里的写还没落库就更新根节点的话，根节点可能先于子节点写进去；
+      // 而且流已经读完了，这里等一下不再挡任何人。
+      await writeChain
 
       // 收尾：把这次运行的总账写进根节点。
       // 注意这里用的是**累计** usage（totalUsage），不是最后一步的 ——

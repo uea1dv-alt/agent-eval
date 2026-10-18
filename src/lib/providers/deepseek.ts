@@ -137,6 +137,14 @@ async function chat(params: LLMCallParams): Promise<LLMCallResult> {
  * 落库是 API 路由的事 —— provider 层保持纯粹，换厂商时才好替换。
  */
 async function* runAgent(params: AgentParams, tools: AgentTool[]): AsyncIterable<AgentEvent> {
+  // toolCallId → 这次工具执行的**真实**耗时（毫秒）。
+  // 为什么必须在 execute 里量：如果靠「我们观察到 tool-call / tool-result
+  // 两个流事件的时刻」去夹，量出来的就包含了**我们自己读流有多慢**。
+  // 这个循环的消费方是 API 路由，它中间会去写数据库 —— 写库期间不读流，
+  // 时间就被算进工具头上了（实测纯算术的工具报过 1560ms）。
+  // 在 execute 里面量，量的是工具本身，跟消费方快慢无关。
+  const toolLatency = new Map<string, number>()
+
   // 把我们的 AgentTool 翻译成 SDK 要的形状。
   // 这一步就是 adapter 层的价值：SDK 的类型只在这个文件里出现。
   const sdkTools = Object.fromEntries(
@@ -145,7 +153,17 @@ async function* runAgent(params: AgentParams, tools: AgentTool[]): AsyncIterable
       sdkTool({
         description: t.description,
         inputSchema: t.inputSchema,
-        execute: (input: unknown) => t.execute(input),
+        // 第二个参数是 SDK 给的执行上下文，里面有 toolCallId。
+        // 模型一轮可以调多个工具，耗时必须按 id 存，不能按工具名（同名就串了）。
+        execute: async (input: unknown, options: { toolCallId: string }) => {
+          const startedAt = performance.now()
+          try {
+            return await t.execute(input)
+          } finally {
+            // 放 finally：工具抛异常时也要把耗时留下，失败的那次同样值得记录
+            toolLatency.set(options.toolCallId, Math.round(performance.now() - startedAt))
+          }
+        },
       }),
     ]),
   )
@@ -156,8 +174,6 @@ async function* runAgent(params: AgentParams, tools: AgentTool[]): AsyncIterable
   let stepText = ''
   let stepReasoning = ''
   let finalText = ''
-  // 工具耗时靠 tool-call 和 tool-result 两个事件夹出来，用 toolCallId 配对
-  const callStartedAt = new Map<string, number>()
 
   try {
     const result = streamText({
@@ -192,7 +208,6 @@ async function* runAgent(params: AgentParams, tools: AgentTool[]): AsyncIterable
           break
 
         case 'tool-call':
-          callStartedAt.set(part.toolCallId, performance.now())
           yield {
             type: 'tool_call',
             toolCallId: part.toolCallId,
@@ -202,14 +217,14 @@ async function* runAgent(params: AgentParams, tools: AgentTool[]): AsyncIterable
           break
 
         case 'tool-result': {
-          const startedAt = callStartedAt.get(part.toolCallId)
-          callStartedAt.delete(part.toolCallId)
+          const latencyMs = toolLatency.get(part.toolCallId)
+          toolLatency.delete(part.toolCallId)
           yield {
             type: 'tool_result',
             toolCallId: part.toolCallId,
             toolName: part.toolName,
             output: part.output,
-            latencyMs: startedAt ? Math.round(performance.now() - startedAt) : 0,
+            latencyMs: latencyMs ?? 0,
           }
           break
         }
@@ -217,15 +232,15 @@ async function* runAgent(params: AgentParams, tools: AgentTool[]): AsyncIterable
         // 工具抛异常时 SDK 抛的是这个事件，不是 tool-result。
         // 失败也要记录 —— 这是 Stage 0 就定下的原则。
         case 'tool-error': {
-          const startedAt = callStartedAt.get(part.toolCallId)
-          callStartedAt.delete(part.toolCallId)
+          const latencyMs = toolLatency.get(part.toolCallId)
+          toolLatency.delete(part.toolCallId)
           yield {
             type: 'tool_result',
             toolCallId: part.toolCallId,
             toolName: part.toolName,
             output: null,
             error: describeError(part.error),
-            latencyMs: startedAt ? Math.round(performance.now() - startedAt) : 0,
+            latencyMs: latencyMs ?? 0,
           }
           break
         }
