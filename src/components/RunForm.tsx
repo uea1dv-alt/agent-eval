@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { ModelInfo } from "@/lib/providers/types";
 import { useAgentStream } from "@/lib/use-agent-stream";
 import AgentRun from "./AgentRun";
+import { inputClass, labelClass } from "./form-styles";
 
 interface ProviderMeta {
   id: string;
@@ -32,11 +33,7 @@ const MODES: { id: Mode; label: string; hint: string }[] = [
   },
 ];
 
-const inputClass =
-  "w-full rounded-xs border border-line bg-base px-2.5 py-1.5 text-sm " +
-  "placeholder:text-faint focus:border-brass/60 disabled:opacity-40 disabled:cursor-not-allowed";
-
-const labelClass = "block text-xs text-muted mb-1.5";
+// 输入框和标签的样式放在 form-styles.ts —— 评测页的几个表单也用同一套
 
 export default function RunForm({ providers, defaultProviderId }: Props) {
   const router = useRouter();

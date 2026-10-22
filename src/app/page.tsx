@@ -1,6 +1,7 @@
 import { Suspense } from "react";
 import RunForm from "@/components/RunForm";
 import RunList, { type RunRow } from "@/components/RunList";
+import SiteHeader from "@/components/SiteHeader";
 import { prisma } from "@/lib/db";
 import { estimateCostUsd, formatCostUsd, formatLatency } from "@/lib/pricing";
 import { DEFAULT_PROVIDER_ID, listProviderMeta } from "@/lib/providers";
@@ -41,12 +42,7 @@ function median(values: number[]): number | null {
 export default function Home() {
   return (
     <div className="mx-auto max-w-[1180px] px-6">
-      <header className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1 py-6">
-        <h1 className="text-lg font-semibold tracking-tight">agent-eval</h1>
-        <p className="text-xs text-faint">
-          Stage 1 · 多步 Agent · trace 树 + 流式
-        </p>
-      </header>
+      <SiteHeader active="runs" note="Stage 1 · 多步 Agent · trace 树 + 流式" />
 
       {/* 表单不依赖数据库，所以放在 Suspense 外面 —— 页面外壳立刻可见，能马上开始输入 */}
       <RunForm providers={listProviderMeta()} defaultProviderId={DEFAULT_PROVIDER_ID} />

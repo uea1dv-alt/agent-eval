@@ -6,6 +6,8 @@
 // Stage 0：每个 run 只有一个 span（llm_call），parentId 恒为 null。
 // Stage 1：一次运行产生多个 span，parentId 串成 trace 树，多了一个 agent_run 根节点。
 //          表结构一行没改 —— 只往 type 列加了个新值，这正是当初选 String 而非 enum 的回报。
+// Stage 2：加评测相关的 5 张表。Span 表仍然一行没改 —— 评测的调用**不写 Span**，
+//          原因见 EvalResult 上面的注释。
 
 generator client {
   provider = "prisma-client-js"
@@ -61,4 +63,150 @@ model Span {
 
   @@index([runId])
   @@index([createdAt])
+}
+
+// ============================================================================
+// Stage 2：评测
+//
+// 评测要回答的是「哪个 prompt 版本更好」。要回答它，需要三样东西：
+//   1. 一批**固定的输入**（Dataset / DatasetCase）
+//   2. 一份**可复用的提示词**（PromptVersion）
+//   3. 一次**记录分数**的评测（EvalRun / EvalResult）
+//
+// 为什么不复用 Span 表达评测层级：Span 的 parentId 只能指向 Span，
+// 而且 groupByRun 是按 runId 分桶再建树的。把评测容器也塞成 Span，
+// 会把几百条用例聚合成「一次运行」，token 和步数全部失真。
+// 评测是**组织层**，Span 是**执行层**，两层分开。
+// ============================================================================
+
+/// 一批测试用例。
+model Dataset {
+  id          String   @id @default(cuid())
+  /// 数据集名。唯一，方便在界面上选
+  name        String   @unique
+  description String?
+  createdAt   DateTime @default(now())
+
+  cases DatasetCase[]
+  evals EvalRun[]
+
+  @@index([createdAt])
+}
+
+/// 数据集里的一条用例。
+model DatasetCase {
+  id        String @id @default(cuid())
+  datasetId String
+
+  /// 喂给模型的题目
+  input String
+  /// 期望答案（可选）。给 judge 当参考，没有也能打分 ——
+  /// 那时候 judge 只能按「有没有直接、准确、完整地回答题目」来判
+  reference String?
+
+  /// 录入顺序。数据集里用例的展示顺序不该随插入时间乱跳
+  position Int @default(0)
+
+  createdAt DateTime @default(now())
+
+  dataset Dataset      @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+  results EvalResult[]
+
+  @@index([datasetId])
+}
+
+/// 一个 prompt 版本。同样的数据集换不同版本跑，才能比出高低。
+model PromptVersion {
+  id String @id @default(cuid())
+
+  /// 版本名，例如 "v1-简洁" / "v2-要求列点"
+  name String @unique
+
+  /// system prompt。评测比的**就是这个**
+  system String
+
+  /// 模型和采样参数也一起记下来：换了模型，两个版本就不可比了
+  model           String
+  temperature     Float?
+  maxOutputTokens Int?
+  thinking        Boolean @default(false)
+  reasoningEffort String?
+
+  createdAt DateTime @default(now())
+
+  evals EvalRun[]
+}
+
+/// 一次评测 = 一个数据集 × 一个 prompt 版本。
+/// 想看「两个版本谁更好」，就是拿同一个数据集跑两次，然后在比较页里选这两次。
+model EvalRun {
+  id              String @id @default(cuid())
+  datasetId       String
+  promptVersionId String
+
+  /// 判分用的模型。**故意和被评模型分开** ——
+  /// 让模型给自己的输出打分会有偏好偏差，这是 LLM-as-judge 的经典坑
+  judgeModel String
+
+  /// "running" | "done" | "failed"
+  status String @default("running")
+
+  /// 跑的时候数据集里有多少条。快照 —— 数据集后来增删了，
+  /// 已跑完的评测进度条不能因此算错
+  caseCount Int
+
+  createdAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  dataset       Dataset       @relation(fields: [datasetId], references: [id], onDelete: Cascade)
+  promptVersion PromptVersion @relation(fields: [promptVersionId], references: [id])
+  results       EvalResult[]
+
+  @@index([datasetId, createdAt])
+  @@index([createdAt])
+}
+
+/// 一条用例的评测结果。
+///
+/// 为什么这里**不写 Span 表**：
+///   1. `groupByRun` 会把同一个 runId 下所有 llm_call 的 token 和步数加在一起。
+///      judge 的调用如果落成同一次运行的 llm_call，judge 烧的 token 会被算进
+///      被测模型的成绩里 —— 对比结果直接失真，而且不报错。
+///   2. 首页的历史列表只扫 300 条 span 就分组。一次 20 条用例的评测会产生
+///      40 条 span，两三次就把列表灌满了。
+/// 不带工具的评测，一条用例就是一次普通调用，本来也没有树可看，
+/// 所以这些数字记在 EvalResult 里就够了。
+model EvalResult {
+  id        String @id @default(cuid())
+  evalRunId String
+  caseId    String
+
+  /// 被测模型的回答
+  output String?
+
+  /// judge 给的分数（0-10）和理由。判分失败时 score 为 null，error 里写明原因
+  score       Int?
+  scoreReason String?
+
+  /// 被测调用的 token / 耗时
+  inputTokens  Int?
+  outputTokens Int?
+  latencyMs    Int?
+
+  /// judge 调用的 token。单独列出来，成本才算得准 ——
+  /// 判分也是真花钱的，藏在被测成本里会让人低估评测开销
+  judgeInputTokens  Int?
+  judgeOutputTokens Int?
+
+  /// 被测调用或判分失败时的原因。失败也保留记录 —— 这是 Stage 0 就定下的原则
+  error String?
+
+  createdAt DateTime @default(now())
+
+  evalRun EvalRun      @relation(fields: [evalRunId], references: [id], onDelete: Cascade)
+  case    DatasetCase  @relation(fields: [caseId], references: [id], onDelete: Cascade)
+
+  /// 一次评测里，同一条例用只该有一条结果。重复请求直接复用，不会重复花钱
+  @@unique([evalRunId, caseId])
+  @@index([evalRunId])
 }
