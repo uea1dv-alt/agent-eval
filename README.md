@@ -43,9 +43,30 @@ npm run dev
 | 命令 | 作用 |
 |---|---|
 | `npm run dev` | 开发服务器 |
+| `npm test` | 单元测试（Node 自带 test runner + `tsx`） |
+| `npm run lint` | ESLint |
 | `npm run db:migrate` | 应用 schema 变更，生成迁移文件 |
 | `npm run db:studio` | 可视化查看数据库（`prisma studio`） |
 | `npm run build` | 生产构建 |
+
+## 测试
+
+```bash
+npm test
+```
+
+只跑**纯函数**的单测：不连数据库、不需要 API key，几百毫秒跑完。
+
+| 文件 | 测什么 |
+|---|---|
+| `src/lib/eval/parse-judge.test.ts` | 16 种模型可能吐出的形状；解析失败必须抛异常（调用方据此记 `null`，不是 `0`） |
+| `src/lib/agent/sse.test.ts` | 同一份数据按任意字节数切块，解码结果必须一样 |
+| `src/lib/agent/tree.test.ts` | 父子关系、孤儿节点当根、同级排序 |
+| `src/lib/runs.test.ts` | 按 runId 分组、token 不重复计数、失败判定 |
+
+**为什么用 Node 自带的 test runner，不装 Vitest/Jest**：被测的都是纯函数，不需要 mock 框架、组件渲染和快照。`tsx` 本来就在依赖里，`tsx --test` 直接能跑 `.ts` 和 `@/` 别名 —— 少一套构建工具、少一份配置。等要测 React 组件或需要 mock 模块时再换也不迟。
+
+会真调模型、真写库的**集成测试**在 `tests/integration/`，手动跑；说明和清理脚本见那里的 README。默认只允许本地地址，防止误打生产库。
 
 ## 项目结构
 
@@ -85,6 +106,7 @@ src/
     ├── errors.ts                   把 unknown 异常转成一句人话
     ├── pricing.ts                  价格表 → 成本估算
     ├── runs.ts                     平铺 span → 按 runId 分组的「运行」
+    ├── run-queries.ts              ★ 按「运行」分页读历史（先取 runId，再取整棵树）
     ├── spans.ts                    span 的序列化与 JSON 字段解析
     ├── use-agent-stream.ts         客户端：消费 SSE，边收边更新界面
     ├── agent/
@@ -171,6 +193,17 @@ agent_run            一次运行一个根节点，parentId = null
 
 **span id 由我们自己用 `crypto.randomUUID()` 生成**，不等数据库返回 —— 这样父 span 的行还没写，子 span 就能引用它的 id。
 
+### 历史列表按「运行」分页
+
+首页一页 20 次运行，分两步读：
+
+1. `groupBy({ by: ['runId'], _max: { createdAt } })` 在数据库里按运行分组 —— **分页发生在这里**；
+2. 拿这一页的 runId 去 `findMany`，把这些运行的全部 span 取回来。
+
+**为什么不直接 `take: 300` 条 span 再分组**：一次 agent 运行有 6–9 个 span，300 条的窗口很容易落在某次运行中间。子 span 的父节点没查进来，树就少一截，而且页面上看不出少了谁 —— 这是会**静默出错**的那类 bug。按运行分页，每一页里的每棵树都是完整的。
+
+> 顺带一提：`skip/take` 分页在「两页之间刚好有新运行写入」时可能重复或跳过一条。这个页面不是实时流，接受这个代价；要严格的话得换成 `(createdAt, runId)` 复合游标。
+
 ## 评测（Stage 2）
 
 一次评测 = **一个数据集 × 一个 prompt 版本**。想看「哪个版本更好」，就拿同一个数据集跑两次，然后在详情页选这两次做对比。
@@ -187,7 +220,7 @@ agent_run            一次运行一个根节点，parentId = null
 两个原因，都会**静默地把结果做错**：
 
 1. `groupByRun` 会把同一个 `runId` 下所有 `llm_call` 的 token 和步数加起来。judge 的调用如果落成同一次运行的 `llm_call`，**judge 烧的 token 会被算进被测模型的成绩里** —— 对比结果直接失真，而且不报错。
-2. 首页只扫 300 条 span 就分组。一次 20 条用例的评测会产生 40 条 span，两三次就把列表灌满。
+2. 首页的历史列表按「运行」分页（一页 20 次）。一次 20 条用例的评测如果每条都记成一次运行，会占满整整一页，把真正要看的 agent 运行挤走 —— 而那本来也不是一次「运行」，是评测里的一条抽样。
 
 不带工具的评测，一条用例就是一次普通调用，本来也没有树可看，所以这些数字记在 `EvalResult` 里就够了。**评测是组织层，Span 是执行层，两层分开。**
 

@@ -1,26 +1,18 @@
+import Link from "next/link";
 import { Suspense } from "react";
 import RunForm from "@/components/RunForm";
 import RunList, { type RunRow } from "@/components/RunList";
 import SiteHeader from "@/components/SiteHeader";
-import { prisma } from "@/lib/db";
 import { estimateCostUsd, formatCostUsd, formatLatency } from "@/lib/pricing";
 import { DEFAULT_PROVIDER_ID, listProviderMeta } from "@/lib/providers";
-import { groupByRun } from "@/lib/runs";
-import { serializeSpan } from "@/lib/spans";
+import { listRunPage } from "@/lib/run-queries";
 
 // 时间固定用东八区显示，保证服务端渲染结果稳定（部署到别的时区的机器上也不会跳）
 const TIME_ZONE = "Asia/Shanghai";
 
-/**
- * 一次查多少条 span。
- *
- * 为什么不是「查 N 次运行」：runId 没有单独的索引，而且分页边界很容易把一次运行
- * 从中间截断 —— 截断后子 span 的父节点不在结果里，树就散了。
- * 多查一些、让 groupByRun 自己分组的代价更小（buildTree 对孤儿节点有兜底）。
- * 真到数据量大到需要分页时，应该按 runId 分页（`findMany({ distinct: ['runId'] })`
- * 拿到一批 runId，再按 runId 查全部 span），那是 Stage 2 的事。
- */
-const SPAN_SCAN_LIMIT = 300;
+interface HomeProps {
+  searchParams: Promise<{ page?: string }>;
+}
 
 const timeFormatter = new Intl.DateTimeFormat("zh-CN", {
   timeZone: TIME_ZONE,
@@ -39,7 +31,7 @@ function median(values: number[]): number | null {
     : sorted[mid];
 }
 
-export default function Home() {
+export default function Home({ searchParams }: HomeProps) {
   return (
     <div className="mx-auto max-w-[1180px] px-6">
       <SiteHeader active="runs" note="Stage 1 · 多步 Agent · trace 树 + 流式" />
@@ -49,9 +41,10 @@ export default function Home() {
 
       {/* 查库的部分包在 Suspense 里。
           Next 16 默认开启 Cache Components：预渲染静态外壳时遇到「未缓存数据」会报错，
-          正确解法就是这里 —— 外壳先出去，数据流式补上。 */}
+          正确解法就是这里 —— 外壳先出去，数据流式补上。
+          searchParams 也是 Promise，必须原样传进来、在 Suspense 内部 await。 */}
       <Suspense fallback={<RecordsFallback />}>
-        <Records />
+        <Records searchParams={searchParams} />
       </Suspense>
 
       <footer className="py-6 text-xs text-faint">
@@ -61,13 +54,15 @@ export default function Home() {
   );
 }
 
-async function Records() {
-  const spans = await prisma.span.findMany({
-    orderBy: { createdAt: "desc" },
-    take: SPAN_SCAN_LIMIT,
-  });
+async function Records({ searchParams }: HomeProps) {
+  // Next 16：searchParams 是 Promise。页码解析失败一律回第 1 页 ——
+  // 手改 URL 的人不该看到 500
+  const { page: pageParam } = await searchParams;
+  const page = Number.parseInt(pageParam ?? "1", 10) || 1;
 
-  const rows: RunRow[] = groupByRun(spans.map(serializeSpan)).map((group) => ({
+  const { runs, hasPrev, hasNext } = await listRunPage(page);
+
+  const rows: RunRow[] = runs.map((group) => ({
     ...group,
     timeLabel: timeFormatter.format(new Date(group.createdAt)),
   }));
@@ -92,7 +87,7 @@ async function Records() {
       {/* 读数条：一行，mono，细线分隔。刻意不做成四张统计卡片 ——
           这是一台仪器的状态显示，不是仪表盘营销页。 */}
       <div className="flex flex-wrap items-center gap-y-1 border-y border-line py-2.5 text-xs">
-        <Reading label="运行" value={String(rows.length)} />
+        <Reading label="本页运行" value={String(rows.length)} />
         <Reading label="输入 token" value={totalIn.toLocaleString("en-US")} tone="steel" />
         <Reading label="输出 token" value={totalOut.toLocaleString("en-US")} tone="brass" />
         <Reading label="花费" value={formatCostUsd(totalCost)} />
@@ -100,6 +95,36 @@ async function Records() {
       </div>
 
       <RunList rows={rows} />
+
+      {/* 分页在「运行」这一层，不在 span 层 —— 一次运行要么整页出现，要么不出现 */}
+      {(hasPrev || hasNext) && (
+        <nav
+          className="flex items-center justify-between border-t border-line py-3 text-xs"
+          aria-label="分页"
+        >
+          {hasPrev ? (
+            <Link
+              href={page <= 2 ? "/" : `/?page=${page - 1}`}
+              className="text-muted transition-colors hover:text-ink"
+            >
+              ← 较新的
+            </Link>
+          ) : (
+            <span />
+          )}
+          <span className="num text-faint">第 {page} 页</span>
+          {hasNext ? (
+            <Link
+              href={`/?page=${page + 1}`}
+              className="text-muted transition-colors hover:text-ink"
+            >
+              更早的 →
+            </Link>
+          ) : (
+            <span />
+          )}
+        </nav>
+      )}
     </>
   );
 }
