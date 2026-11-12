@@ -1,0 +1,52 @@
+# push / PR 时自动跑类型检查、Lint、单测。
+#
+# 为什么需要：这个项目的 main 分支一推就会自动发生产（Vercel Git 集成），
+# 而测试只有本地手动跑才会执行。中间没有任何关卡 —— 改错一行 push 上去，线上就坏了。
+# 这个 workflow 就是那道关卡：红了 GitHub 会显示，PR 也拦得住。
+#
+# 注意：这里**不需要任何 secret**。单测都是纯函数，不连数据库、不调模型；
+# prisma generate 只读 schema 生成类型，不建立连接。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# 同一条分支连续 push 时，取消上一次还没跑完的，省时间也省额度
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    env:
+      # Prisma generate 不连库，但 schema 里声明了这两个变量名。
+      # 给一组假值只是让 generate 不抱怨「变量未找到」——它们不会被真的连接。
+      POSTGRES_PRISMA_URL: postgresql://ci:ci@localhost:5432/ci?schema=public
+      POSTGRES_URL_NON_POOLING: postgresql://ci:ci@localhost:5432/ci?schema=public
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      # npm ci 会根据 package-lock.json 精确安装，并触发 postinstall（prisma generate）
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 类型检查
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npm run lint
+
+      - name: 单元测试
+        run: npm test
