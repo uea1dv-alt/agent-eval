@@ -1,0 +1,7 @@
+# 用 `vercel deploy` 从本地打包上传时，别把 .env 一起传上去。
+# 部署日志里出现过 "Environment variables loaded from .env" —— 说明那次预览部署
+# 把本地 .env 也打包了。线上变量应该由 Vercel 项目的环境变量提供，
+# 本地文件不该进构建环境。
+.env
+.env.*
+!.env.example

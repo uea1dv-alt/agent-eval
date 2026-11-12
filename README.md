@@ -68,6 +68,14 @@ npm test
 
 会真调模型、真写库的**集成测试**在 `tests/integration/`，手动跑；说明和清理脚本见那里的 README。默认只允许本地地址，防止误打生产库。
 
+### CI
+
+`.github/workflows/ci.yml`：push 到 `main` 或提 PR 时，GitHub Actions 跑 `tsc --noEmit` → `npm run lint` → `npm test`。
+
+**为什么需要**：这条分支一推就自动发生产（Vercel Git 集成），而测试只有本地手动跑才会执行 —— 中间没有任何关卡。CI 就是那道关卡。
+
+**不需要配 secret**：单测都是纯函数，`prisma generate` 只读 schema 生成类型、不连数据库。workflow 里那两个 `POSTGRES_*` 是假值，仅仅让 generate 不报「变量未找到」。
+
 ## 项目结构
 
 ```
